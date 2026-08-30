@@ -46,6 +46,22 @@ QPLAYER_PLUGIN_SIGNING_KEY=/secure/path/publisher-private.pem ./scripts/package.
 中的每个文件，生成 `META-INF/qplayer-files.json`，并在提供私钥时写入
 `META-INF/qplayer.sig`。输出文件位于 `dist/<id>-<version>.qplug`。
 
+首次发布前生成独立的 P-256 发布者密钥，并把私钥写入仓库 Actions Secret；
+私钥文件随后应移至安全的离线备份位置，不要提交：
+
+```bash
+openssl ecparam -name prime256v1 -genkey -noout -out publisher-private.pem
+gh secret set QPLAYER_PLUGIN_SIGNING_KEY < publisher-private.pem
+```
+
+模板工作流会在推送与 `plugin.json` 版本一致的标签时自动签名、校验并创建
+GitHub Release，普通分支与 Pull Request 仍只构建未签名开发包：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
 ## 安全与发布
 
 - 不要在源码、测试数据、日志或 Release 中提交 Cookie、Token、私钥。
