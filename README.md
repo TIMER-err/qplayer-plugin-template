@@ -52,7 +52,16 @@ QPLAYER_PLUGIN_SIGNING_KEY=/secure/path/publisher-private.pem ./scripts/package.
 ```bash
 openssl ecparam -name prime256v1 -genkey -noout -out publisher-private.pem
 gh secret set QPLAYER_PLUGIN_SIGNING_KEY < publisher-private.pem
+openssl ec -in publisher-private.pem -pubout -outform DER \
+  | openssl base64 -A > publisher-key.pub
 ```
+
+`publisher-key.pub` 是公钥，应当提交。它有两个用途：交给 QPlayer 固定在程序内，
+以及让发布工作流在签名前核对私钥没有被换掉。
+
+**发布者密钥一旦被 QPlayer 固定就不能更换。** QPlayer 把公钥编译进自己的二进制，
+换密钥会让所有已发布的 QPlayer 都无法安装本插件，直到 QPlayer 自己发新版本。
+工作流中的“Match the pinned publisher key”步骤会在签名前拦住这种情况。
 
 模板工作流会在推送与 `plugin.json` 版本一致的标签时自动签名、校验并创建
 GitHub Release，普通分支与 Pull Request 仍只构建未签名开发包：
@@ -62,13 +71,19 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
+QPlayer 直接读取本仓库 GitHub 的**最新 Release** 来决定可安装的版本，因此发布必须
+满足：标签为 `v<plugin.json 的 version>`、Release 附件中恰好有一个 `.qplug`，且不是
+草稿或预发布（GitHub 的 `releases/latest` 会跳过这两类）。满足这些条件时，插件发新版
+不需要 QPlayer 做任何改动。
+
 ## 安全与发布
 
 - 不要在源码、测试数据、日志或 Release 中提交 Cookie、Token、私钥。
 - 登录凭据只能通过 `credentials.*` 接口存储。
 - 不要请求与实际功能无关的权限或过宽域名。
 - 音源服务的使用条件、内容授权和当地法律由插件作者与用户自行确认。
-- 若希望进入 QPlayer 的受信目录，需要单独维护插件仓库、发布签名包，并向
-  QPlayer 提交目录更新；QPlayer 不捆绑插件代码或包。
+- 若希望成为 QPlayer 的内置源，需要单独维护插件仓库、发布签名包，并向 QPlayer
+  提交一条包含 `owner/repo` 与 `publisher-key.pub` 内容的条目（`PluginCatalogService.SOURCES`）。
+  收录之后插件自行发版即可，QPlayer 不捆绑插件代码或包。
 
 本模板使用 MIT 许可证。由模板生成的仓库可以自行选择许可证。
