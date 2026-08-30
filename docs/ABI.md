@@ -12,7 +12,7 @@ QPlayer 版本。
 <provider>:<kind>:<percent-encoded-native-id>
 ```
 
-`kind` 可以是 `song`、`album`、`artist`、`playlist`、`user` 或 `room`。
+`kind` 可以是 `song`、`album`、`artist`、`playlist` 或 `user`。
 插件只会收到属于自己的原生 ID，不应生成其他 provider 的规范 ID。
 
 ## 清单
@@ -87,10 +87,10 @@ handler 可以直接返回值或 Promise。每个插件使用一个串行 actor 
 | `heartRecommendation` | 种子歌曲与可选歌单 → 歌曲 |
 | `share` | 实体 → 分享 URL/文本 |
 | `matchSong` | 元数据 → 匹配后的歌曲 |
-| `listenTogether` | 房间创建、加入、快照、同步报告、心跳与退出 |
 
 QPlayer 会校验结果大小、实体 ID 所属、分页、歌词大小、请求头、播放/图片 URL
-域名和枚举值。只声明已经完整实现的能力。
+域名和枚举值。只声明已经完整实现的能力。一起听等平台专属功能不属于宿主
+capability，应由插件自己的界面 handler 与后台 handler 完整实现。
 
 ## 主机调用
 
@@ -103,6 +103,11 @@ QPlayer 会校验结果大小、实体 ID 所属、分页、歌词大小、请�
 | `http.request` | `network` | 域名、方法、DNS、重定向与响应大小受限 |
 | `crypto.*` | 无 | 摘要、随机数、AES、HMAC、模幂、X25519 |
 | `compression.gunzip` | 无 | 有大小上限的解压 |
+| `playback.read` | `playbackRead` | 当前歌曲、队列、播放时钟、切换状态与变更版本 |
+| `playback.play/pause/seek/select/next/blockAutoAdvance` | `playbackControl` | 与音源无关的播放控制 |
+| `queue.replace` | `queueWrite` | 校验 Song DTO 后替换队列 |
+| `notifications.toast` | `notifications` | 显示宿主 Toast/Snackbar |
+| `clipboard.write` | `clipboard` | 写入系统剪贴板 |
 
 返回给 QPlayer 的播放、封面等 URL 会再次检查域名授权。
 
@@ -114,11 +119,20 @@ QPlayer 会校验结果大小、实体 ID 所属、分页、歌词大小、请�
 自定义界面需要 `customUi`，并在 `ui` 中声明：
 
 ```json
-{"id":"preferences","placement":"settings","source":"ui/Preferences.qml"}
+{"id":"preferences","placement":"settings","source":"ui/Preferences.qml",
+ "label":"插件设置","icon":"tune"}
 ```
+
+`settings` 会出现在插件独立设置页；`playerAction` 会按清单中的 `label` 和
+`icon` 出现在手机顶部栏与桌面/平板导航栏。QPlayer 只负责入口和隔离窗口，
+不知道该功能的业务含义。
 
 该 QML 在独立安全 Realm 中运行，只能访问 `plugin.call(action,payloadJson)`，
 不能访问 `player`、设置、Java、文件系统或宿主窗口对象。
+
+声明 `backgroundTimers` 后可以导出 `backgroundTick`。QPlayer 约每秒调用一次，
+同一插件的 tick 不会重入，插件停用或移除后立即停止。房间协议、主控权、进度
+同步和通知等策略应保留在插件中，只通过上述通用播放接口影响宿主。
 
 包内除 `META-INF/qplayer-files.json` 和可选签名外的每个文件都必须出现在
 哈希清单中。`META-INF/qplayer.sig` 是对哈希清单原始字节的 P-256
