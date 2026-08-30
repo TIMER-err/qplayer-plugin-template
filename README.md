@@ -31,7 +31,7 @@ qplayer.call("http.request", {
 权限、精确的 `networkDomains` 和 `networkMethods`。
 
 完整 ABI、数据结构、登录、凭据、歌词、播放地址、一起听和可选 QML 扩展说明：
-[QPlayer 插件文档](https://github.com/TIMER-err/qplayer/blob/master/docs/plugins.md)。
+[QPlayer 插件 ABI 1.0](docs/ABI.md)。
 
 ## 包签名
 
