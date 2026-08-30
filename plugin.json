@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "example",
+  "name": "Example Source",
+  "version": "0.1.0",
+  "apiVersion": "1.0",
+  "minHostVersion": "1.4.0",
+  "entry": "src/main.js",
+  "publisher": "Your name",
+  "capabilities": ["searchSongs"],
+  "permissions": [],
+  "networkDomains": [],
+  "networkMethods": [],
+  "ui": []
+}
