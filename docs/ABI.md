@@ -91,7 +91,7 @@ handler 可以返回值或 Promise。`require()` 只能加载包内的相对路�
 | `clearTextNetwork` | 访问明文 `http://` |
 | `localNetwork` | 访问内网/环回地址；未授予时这类地址在 DNS 解析后被拒绝 |
 | `credentials` | 读写加密凭据库；`login` 能力强制要求 |
-| `webAuth` | 提供网页登录方式，由宿主打开系统 WebView |
+| `webAuth` | 网页登录与受控系统 WebView 脚本执行 |
 | `clipboard` | 写入系统剪贴板 |
 | `openUrl` | 请求宿主用外部浏览器打开链接 |
 | `playbackRead` | 读取当前播放状态 |
@@ -340,6 +340,15 @@ Challenge 是流程的一次状态快照：
 | `queue.replace` | `queueWrite` | `{songs, currentSongId, positionMs, playing}` |
 | `notifications.toast` | `notifications` | `{message}`，≤500 字符 |
 | `clipboard.write` | `clipboard` | `{text}`，≤16 KiB |
+| `webAuth.runScript` | `webAuth` | `{originUrl, script}`；脚本通过 `qplayerWebAuthDone(string)` 返回结果 |
+
+### webAuth.runScript
+
+`originUrl` 必须是 `networkDomains` 已授权的 HTTPS URL。宿主在离屏系统 WebView 中
+运行最多 256 KiB 的插件脚本，并在首次调用 `qplayerWebAuthDone(string)` 后返回最多
+64 KiB 的结果并销毁会话；未返回结果的会话会超时。SDK 地址、初始化流程与结果解析都
+属于插件。WebView 子资源和请求不经过 `http.request` 的 DNS/重定向策略，因此只应为
+确实需要浏览器环境的可信插件声明 `webAuth`。
 
 ### http.request
 

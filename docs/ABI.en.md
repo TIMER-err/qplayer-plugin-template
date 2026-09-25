@@ -97,7 +97,7 @@ absolute segments.
 | `clearTextNetwork` | plain `http://` access |
 | `localNetwork` | private/loopback addresses, otherwise refused after DNS resolution |
 | `credentials` | the encrypted vault; required by `login` |
-| `webAuth` | web login through the platform system WebView |
+| `webAuth` | web login and bounded system-WebView script execution |
 | `clipboard` | writing the system clipboard |
 | `openUrl` | asking the host to open a link in an external browser |
 | `playbackRead` | reading the current playback state |
@@ -353,6 +353,16 @@ All calls are asynchronous and return a Promise.
 | `queue.replace` | `queueWrite` | `{songs, currentSongId, positionMs, playing}` |
 | `notifications.toast` | `notifications` | `{message}`, ≤500 chars |
 | `clipboard.write` | `clipboard` | `{text}`, ≤16 KiB |
+| `webAuth.runScript` | `webAuth` | `{originUrl, script}`; the script returns through `qplayerWebAuthDone(string)` |
+
+### webAuth.runScript
+
+`originUrl` must be an HTTPS URL granted by `networkDomains`. The host runs up to
+256 KiB of plugin JavaScript in an off-screen system WebView, returns up to 64 KiB
+from the first `qplayerWebAuthDone(string)` call, and destroys or times out the
+session. SDK URLs, initialization and result parsing belong to the plugin. WebView
+subresources and requests do not pass through the `http.request` DNS/redirect
+policy, so grant `webAuth` only to trusted plugins that require a browser context.
 
 ### http.request
 
