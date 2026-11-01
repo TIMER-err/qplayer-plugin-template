@@ -2,7 +2,7 @@
 
 <p><a href="ABI.md">简体中文</a> · <b>English</b></p>
 
-This reference follows the implementation in **QPlayer 1.9.6**. `schemaVersion`
+This reference follows the implementation in **QPlayer 1.9.7**. `schemaVersion`
 is `1` and `apiVersion` remains `1.0`; not every 1.0 host supplies every feature.
 Compatibility checks require the same API major version, no newer requested minor
 version, and a host that meets the optional `minHostVersion`. Set that minimum for
@@ -149,6 +149,7 @@ Each capability maps to a same-named handler, grouped here by purpose.
 | `searchSongs` | `{query, cursor, limit}`, limit 1–100 | `{items: Song[], nextCursor}`, ≤200 items |
 | `searchAlbums` | same | `{items: Album[], nextCursor}` |
 | `searchArtists` | same | `{items: Artist[], nextCursor}` |
+| `searchPlaylists` | same; requires host 1.9.7 | `{items: Playlist[], nextCursor}` |
 | `hotSearch` | `{}` | array of strings, first 50 kept |
 
 The cursor is opaque to the host: an offset, a page number or a server token,
@@ -158,6 +159,22 @@ The host reads `items` and `nextCursor`, not extra fields such as `hasMore`, `to
 or page numbers. Any nonempty cursor means another page exists. `limit` is the
 requested size; the parser's hard cap is 200 items. Exceeding that cap fails the
 response; the parser does not promise to truncate to the requested `limit`.
+
+The optional `searchPlaylists` capability is available from **QPlayer 1.9.7**.
+Plugins that advertise it must set `minHostVersion` to at least `1.9.7`.
+Older hosts do not recognize this capability. `apiVersion` remains `1.0`;
+existing search and detail handlers are unchanged.
+
+`items` uses the existing `Playlist` DTO; summary entries can omit `songs`.
+The host qualifies native playlist IDs as `provider:playlist:nativeId` and
+nonempty `owner.id` values as `provider:user:nativeId`, with native IDs percent-encoded.
+Opening a result calls that provider's `playlistDetails`; no new search detail
+handler is required.
+
+Playlist search queries all enabled providers that declare the capability, with
+the primary provider first, and deduplicates results by qualified playlist ID.
+The next-page cursor must advance; returning the requested cursor ends pagination.
+Successful small or duplicate-only pages can trigger another request to fill the viewport.
 
 ### Details
 

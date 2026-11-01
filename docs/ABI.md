@@ -2,7 +2,7 @@
 
 <p><b>简体中文</b> · <a href="ABI.en.md">English</a></p>
 
-本文档以 **QPlayer 1.9.6** 的实现为基线，描述音源插件的 handler、返回结构和宿主调用。
+本文档以 **QPlayer 1.9.7** 的实现为基线，描述音源插件的 handler、返回结构和宿主调用。
 `schemaVersion` 为 `1`，`apiVersion` 仍为 `1.0`，不代表所有 1.0 宿主都提供相同功能。
 兼容检查要求 API 主版本相同、请求的次版本不高于宿主，并检查可选的 `minHostVersion`。
 使用近期接口时，按实际使用的功能与验证结果设置最低宿主版本；本文不推测未知的引入版本。
@@ -138,6 +138,7 @@ handler 可以返回值或 Promise。`require()` 只能加载包内的相对路�
 | `searchSongs` | `{query, cursor, limit}`，limit 1–100 | `{items: Song[], nextCursor}`，items ≤200 |
 | `searchAlbums` | 同上 | `{items: Album[], nextCursor}` |
 | `searchArtists` | 同上 | `{items: Artist[], nextCursor}` |
+| `searchPlaylists` | 同上；要求宿主 1.9.7 | `{items: Playlist[], nextCursor}` |
 | `hotSearch` | `{}` | 字符串数组，取前 50 条 |
 
 `cursor` 对宿主不透明，可以是 offset、页码或服务端 token，≤8192 字符。没有下一页时
@@ -146,6 +147,19 @@ handler 可以返回值或 Promise。`require()` 只能加载包内的相对路�
 宿主只读取 `items` 与 `nextCursor`，不读取 `hasMore`、`total` 或页码等附加字段。
 没有下一页时返回 `nextCursor: ""`；任何非空游标均表示还有下一页。`limit` 是请求建议，
 解析器的硬上限是每页 200 条，超出会失败，不保证按请求的 `limit` 自动截断。
+
+`searchPlaylists` 是可选能力，从 **QPlayer 1.9.7** 起提供。声明该能力的插件必须将
+`minHostVersion` 设为至少 `1.9.7`，旧宿主不识别此能力。`apiVersion` 仍为 `1.0`，
+既有搜索和详情 handler 不变。
+
+`items` 复用现有 `Playlist` DTO，摘要可以省略 `songs`。宿主将原生歌单 ID 限定为
+`provider:playlist:nativeId`，将非空 `owner.id` 限定为 `provider:user:nativeId`，
+其中原生 ID 按百分号编码。打开搜索结果时，宿主调用对应音源的 `playlistDetails`，
+不需要新增搜索详情 handler。
+
+歌单搜索会查询所有声明此能力的已启用音源，主音源排在前面，并按限定后的歌单 ID 去重。
+下一页游标必须推进；返回与请求相同的游标会结束分页。成功的小页或只含重复项的页，
+仍可能触发后续请求，以补足当前视口。
 
 ### 详情
 

@@ -25,7 +25,7 @@ python3 scripts/verify-package.py dist/*.qplug
 默认示例只声明 `searchSongs`，返回一个合法的空分页，不需要任何权限，可以直接安装并
 启用。这一步用于先验证打包、导入与启用流程，再实现具体业务。
 
-接口参考以 QPlayer **1.9.6** 实现为基线，`apiVersion` 仍为 **1.0**。默认空搜索示例
+接口参考以 QPlayer **1.9.7** 实现为基线，`apiVersion` 仍为 **1.0**。默认空搜索示例
 保留 `minHostVersion: "1.4.0"`；这不表示完整参考中的新接口均可用于 1.4.0。
 使用新功能时，应按实际验证过的最低宿主版本调整清单，不要只依据 `apiVersion` 判断。
 

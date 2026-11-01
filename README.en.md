@@ -30,7 +30,7 @@ The default example declares only `searchSongs` and returns a valid empty page, 
 it requires no permissions and can be installed and enabled as is. This verifies the
 packaging, import and activation path before any real logic is written.
 
-The reference follows QPlayer **1.9.6**; `apiVersion` remains **1.0**. The empty
+The reference follows QPlayer **1.9.7**; `apiVersion` remains **1.0**. The empty
 search example keeps `minHostVersion: "1.4.0"`. This does not make every interface
 in the reference available on 1.4.0. Set the minimum host version to the oldest
 version you actually verified for the features you use, not from `apiVersion` alone.
