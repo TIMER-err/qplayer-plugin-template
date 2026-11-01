@@ -2,15 +2,19 @@
 
 <p><a href="ABI.md">简体中文</a> · <b>English</b></p>
 
-This document describes the complete contract between QPlayer and a music source
-plugin: the arguments a handler receives, the structures it must return, and the
-inputs the host rejects.
+This reference follows the implementation in **QPlayer 1.9.6**. `schemaVersion`
+is `1` and `apiVersion` remains `1.0`; not every 1.0 host supplies every feature.
+Compatibility checks require the same API major version, no newer requested minor
+version, and a host that meets the optional `minHostVersion`. Set that minimum for
+the features and host versions you actually verify. This reference does not guess
+unknown introduction versions. The default empty search example keeps `1.4.0`.
 
-QPlayer itself contains no online music source. Search, playlists, stream URLs,
-lyrics and login all come from a `.qplug` package the user installs. The host does
-three things: run the plugin in an isolated environment, validate every field it
-returns, and render the result. The limits below follow from the host having to
-treat plugin code as unreviewed third-party code.
+QPlayer contains no online source. Installed `.qplug` packages supply search,
+playlists, streams, lyrics, and login. The host validates defined fields and renders
+results; unknown extra fields do not necessarily fail and must not be relied on.
+
+Unless a limit explicitly says bytes, string lengths use Java `String.length()`:
+UTF-16 code units, not UTF-8 bytes. MiB means 1024 × 1024 bytes.
 
 ---
 
@@ -21,27 +25,24 @@ plugin. It has no access to Java classes, `Packages`, the filesystem, other plug
 data, or QPlayer's QML scene. The only external interface is the global `qplayer`
 object.
 
-Each plugin has one actor thread and handlers run serially, so there is no
-concurrency to manage. A single call is interrupted after **90 seconds**.
+Each plugin has one actor thread that serializes JavaScript execution. Maintain
+business state across asynchronous waits. The default call timeout is **90 seconds**,
+including time spent waiting for host calls.
+
+The default example needs no permissions:
 
 ```js
 module.exports = {
   handlers: {
     searchSongs: function (args) {
-      return qplayer.call("http.request", {
-        url: "https://api.example.com/search?q=" + encodeURIComponent(args.query),
-        method: "GET"
-      }).then(function (response) {
-        var data = JSON.parse(response.body);
-        return {
-          items: data.songs.map(toSongDto),
-          nextCursor: data.hasMore ? String(data.offset + data.songs.length) : ""
-        };
-      });
+      return {items: [], nextCursor: ""};
     }
   }
 };
 ```
+
+See the [README](../README.en.md#next-steps) for a complete network search mapping.
+Its example endpoint is not a built-in source.
 
 A handler may return a value or a Promise. `require()` loads only relative `.js`
 files inside the verified package, 4 MiB per module.
@@ -61,7 +62,7 @@ so the UI never shows an entry that does nothing.
   "name": "Example Source",
   "version": "1.0.0",
   "apiVersion": "1.0",
-  "minHostVersion": "1.5.0",
+  "minHostVersion": "1.9.6",
   "entry": "src/main.js",
   "capabilities": ["searchSongs", "resolveStream", "lyrics"],
   "permissions": ["network"],
@@ -89,6 +90,11 @@ so the UI never shows an entry that does nothing.
 All paths are package-relative and may not contain `..`, backslashes, schemes or
 absolute segments.
 
+`1.9.6` is the baseline for this reference example, not the introduction version of
+every capability. `publisher` is publisher text; `icon` is an optional package
+resource path. `ui[].source` is accepted for historical compatibility but is not
+executed. Unlike manifest resource paths, relative `require()` paths may use `./module.js`.
+
 ### Permissions
 
 | Permission | Grants |
@@ -99,15 +105,18 @@ absolute segments.
 | `credentials` | the encrypted vault; required by `login` |
 | `webAuth` | web login and bounded system-WebView script execution |
 | `clipboard` | writing the system clipboard |
-| `openUrl` | asking the host to open a link in an external browser |
+| `openUrl` | retained permission; no usable `openUrl.*` host method is currently implemented |
 | `playbackRead` | reading the current playback state |
 | `playbackControl` | play, pause, seek, skip |
 | `queueWrite` | replacing the playback queue |
 | `notifications` | host toast/snackbar |
 | `customUi` | declarative dialog entries |
 | `backgroundTimers` | exporting `backgroundTick`, called about once a second |
+| `files.save` | calling `files.save` and `files.downloadCurrent`, see section 7 |
 
-These permissions are listed verbatim for the user to confirm at install time.
+The installer lists permissions for user confirmation. Permissions do not imply
+other permissions: `webAuth` and `files.save` do not grant `network`. Returned
+network URLs still require `network` and a domain grant.
 
 ---
 
@@ -144,6 +153,11 @@ Each capability maps to a same-named handler, grouped here by purpose.
 
 The cursor is opaque to the host: an offset, a page number or a server token,
 ≤8192 chars. Return an empty string when there is no next page.
+
+The host reads `items` and `nextCursor`, not extra fields such as `hasMore`, `total`,
+or page numbers. Any nonempty cursor means another page exists. `limit` is the
+requested size; the parser's hard cap is 200 items. Exceeding that cap fails the
+response; the parser does not promise to truncate to the requested `limit`.
 
 ### Details
 
@@ -192,7 +206,7 @@ The three parts of `home`:
   url: "https://...",          // required, must be inside the granted domains
   headers: {"Referer": "..."}, // optional, ≤64, values ≤8192 chars, no newlines
   mimeType: "audio/mpeg",      // optional
-  expiresAtMs: 1700000000000,  // optional; the host re-resolves afterwards
+  expiresAtMs: 1700000000000,  // optional expiry timestamp metadata for caching
   trial: false,                // preview clip
   cacheable: true,             // default true; set false for one-shot URLs
   renditionId: "1234"          // optional, when the served track differs
@@ -201,9 +215,44 @@ The three parts of `home`:
 
 The `Host`, `Content-Length` and `Connection` request headers are dropped.
 
-Each lyric asset: `format` is `lrc`/`yrc`/`ttml`, `role` is
-`original`/`translation`/`romanization` (default `original`), `text` is the content.
-At most 12 assets, 4 MiB each.
+The host supplies `quality`. Current playback/download paths use values such as
+`standard`, `higher`, `exhigh`, `lossless`, and `hires`. Map them to the service's
+own tiers; they do not promise that the service offers that quality.
+`renditionId` is a native song ID for this plugin. `trial` defaults to false and
+`cacheable` to true. The initial stream URL needs a grant, but subsequent player
+CDN redirects do not apply `networkDomains` at every hop. Host audio downloads use
+that rule too. Do not describe the `http.request` redirect policy as universal.
+
+`lyrics` returns an ordered `assets` array. Return `{assets: []}` for no lyrics:
+
+```js
+return {assets: [
+  {format: "yrc", role: "original", text: "[0,1000](0,1000,0)Hello"},
+  {format: "lrc", role: "translation", text: "[00:00.00]你好"},
+  {format: "lrc", role: "romanization", text: "[00:00.00]Hello"}
+]};
+```
+
+| Field | Values accepted at the plugin boundary |
+|---|---|
+| `format` | required; `lrc`, `yrc`, or `ttml`, converted to lowercase |
+| `role` | `original`, `translation`, or `romanization`; omitted/empty means `original`; case-sensitive |
+| `text` | required nonempty string, at most 4 × 1024 × 1024 UTF-16 code units |
+
+The cap is 12 assets. With one asset per role, playback selects the original,
+translation, and romanization in array order. Put the intended original first:
+before a base is selected, a repeated translation or romanization can become the
+base. Do not use duplicate roles as format alternatives. The host does not rank
+formats or try another asset when the selected base parses to no lines. Sidecar
+lines attach to the nearest original start time. The TTML parser handles embedded
+translations/romanization; separate sidecars write those fields on matched lines.
+
+Downloaded lyric text uses the first nonempty original, or the first other nonempty
+asset if no original exists. It preserves raw text, without merging translations
+or converting YRC/TTML to LRC. This differs from playback parsing.
+Local-file/internal parsers also support QRC, LYS, ESLRC, and word-time LRC, but
+the plugin boundary does not accept those `format` values or `translated`/`romaji`
+role aliases. Convert them to an accepted format before returning them.
 
 ### Account and library
 
@@ -214,6 +263,8 @@ At most 12 assets, 4 MiB each.
 | `like` | `{operation: "list"}` | native song ids, ≤100000 |
 | `like` | `{operation: "set", id, liked}` | `true` or `{success: true}` |
 | `playlistMutation` | `{operation, playlistId, songIds, name}` | same |
+| `playlistReorder` | `{playlistId, songIds}`, complete new order, 1–10000 distinct native song IDs from this provider | `true` or `{success: true}` |
+| `playlistCover` | `{playlistId, imageBase64, filename, mimeType}`, original image ≤8 MiB, filename is not a path | `true` or `{success: true}` |
 | `share` | `{id, kind}` | a share URL string |
 
 `playlistMutation` operations: `add`, `remove`, `subscribe`, `unsubscribe`,
@@ -221,14 +272,20 @@ At most 12 assets, 4 MiB each.
 `{operation:"create", name, private}` and returns `{id: "<native id>"}` or the id
 string. Other operations carry ≤1000 `songIds`.
 
-`matchSong` remains in the capability enum; the current host does not invoke it.
+`matchSong` remains in the enum, but has no current host route, argument contract,
+or result contract. Do not treat it as a callable matching interface.
+`listenTogether` is also retained for compatibility, without a host handler route.
+Plugins own such features through declarative UI, `backgroundTick`, and generic
+playback calls. Declaring either name still requires a same-named handler at
+startup, so new plugins should not declare them just as feature labels.
 
 ---
 
 ## 5. Data shapes
 
-Every field is type- and length-checked; a value out of range fails the entire
-response. Missing optional fields take their defaults.
+The host applies field-specific parsing rules. Most bounded arrays fail when
+oversized; a few paths, such as `hotSearch`, truncate. Do not assume uniform strict
+rejection for all fields. Missing optional fields take their defaults.
 
 ### Song
 
@@ -259,7 +316,7 @@ dropped frames and frequent GC. If the CDN supports a resize parameter (NetEase'
 |---|---|---|
 | `id` | string/number | **required** |
 | `name` | string | **required**, ≤4096 |
-| `description` | string | ≤1 MiB |
+| `description` | string | ≤1048576 UTF-16 code units |
 | `artworkUrl` / `artworkThumbUrl` | string | as above |
 | `trackCount` | number | track count |
 | `playCount` | number | play count; displayed instead when there is no track count |
@@ -290,7 +347,7 @@ handler serves five operations:
 
 | operation | arguments | result |
 |---|---|---|
-| `methods` | `{}` | array of login methods, ≤8 |
+| `methods` | `{operation:"methods", platform}`, currently `android` or `desktop` | array of methods, ≤8 |
 | `begin` | `{methodId}` | challenge |
 | `poll` | `{challengeId}` | challenge |
 | `submit` | `{methodId, credential}` | challenge |
@@ -301,7 +358,7 @@ A login method:
 ```js
 {
   id: "qr",                    // [a-z][a-z0-9._-]{0,63}
-  type: "qr",                  // qr | web | credential
+  type: "qr",                  // qr | web | credential | app
   label: "Scan to sign in",
   instructions: "Scan the code with the mobile app",
   // required for web, must be HTTPS and inside the grant:
@@ -309,13 +366,22 @@ A login method:
   cookieUrl: "https://example.com",
   credentialCookieName: "SESSION",
   // optional for credential:
-  credentialLabel: "Paste cookie"
+  credentialLabel: "Paste cookie",
+  // optional app button label:
+  appLabel: "Open app to confirm"
 }
 ```
 
-`web` requires the `webAuth` permission. The host opens the platform WebView and
-returns only the cookie named by `credentialCookieName`; nothing else is passed
-back. QPlayer does not interpret any vendor's cookie semantics.
+Use `platform` to select suitable methods; older callers may omit it. `app`
+requires an app-link launcher, which is not guaranteed on desktop. Its `begin`
+challenge returns `appUrl`; the host opens it only after a user click. This
+controlled login link does not require `openUrl`.
+
+`web` requires `webAuth`. `webUrl` and `cookieUrl` must be granted HTTPS URLs.
+`credentialCookieName` must match `[A-Za-z0-9_.-]{1,64}`. The host checks for that
+cookie, then sends the Cookie header for `cookieUrl` to `login` with `submit`;
+it does not return only that one cookie. The plugin validates and persists the
+credential. QPlayer does not interpret vendor cookie semantics.
 
 A challenge is one snapshot of the flow:
 
@@ -327,9 +393,19 @@ A challenge is one snapshot of the flow:
   message: "Waiting for scan",
   qrContent: "https://...",    // the host renders the QR code
   expiresAtMs: 0,
-  account: {...}               // may be included on success to save a call
+  account: {loggedIn: true, id: "user-1", displayName: "Example"}
 }
 ```
+
+A challenge may also return `qrImageBase64`: raw PNG Base64, without a data URI
+prefix, at most 300000 characters. The host checks Base64 and the PNG signature.
+An image takes precedence over host-generated QR from `qrContent`.
+`qrContent` and `message` allow 64 Ki characters; `appLabel` allows 4096.
+HTTPS `appUrl` values need a network grant. Custom schemes are limited to
+`snssdk1128`, `snssdk2329`, `snssdk8478`, `snssdk8663`, `luna`, `aweme`,
+`orpheus`, `orpheuswidget`, `wtloginmqq`, `mqqapi`, `mqq`, and `qqmusic`.
+Other/disallowed links are cleared and never opened automatically. `http`,
+`intent`, and `file` are not accepted app schemes.
 
 The plugin persists credentials with `credentials.put` and should delete those keys
 on `logout`. Credentials are AES-GCM encrypted and namespaced per plugin; QPlayer
@@ -343,26 +419,33 @@ All calls are asynchronous and return a Promise.
 
 | Method | Permission | Notes |
 |---|---|---|
-| `storage.get/put/delete` | — | plugin-private, key `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`, ≤1 MiB per value |
+| `storage.get/put/delete` | — | `{key}` / `{key,value}`; key `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`; one serialized JSON record including key/value ≤1 MiB, not a total plugin quota |
 | `credentials.get/put/delete` | `credentials` | encrypted, isolated per plugin and key |
 | `http.request` | `network` | see below |
 | `crypto.digest/random/aes/hmac/modPow/x25519` | — | see below |
-| `compression.gunzip` | — | `{data, dataEncoding, output}` |
+| `compression.gunzip` | — | `{data, dataEncoding, outputEncoding}` |
 | `playback.read` | `playbackRead` | playback snapshot |
 | `playback.play/pause/seek/select/next/blockAutoAdvance` | `playbackControl` | source-neutral playback control |
 | `queue.replace` | `queueWrite` | `{songs, currentSongId, positionMs, playing}` |
 | `notifications.toast` | `notifications` | `{message}`, ≤500 chars |
-| `clipboard.write` | `clipboard` | `{text}`, ≤16 KiB |
+| `clipboard.write` | `clipboard` | `{text}`, ≤16384 UTF-16 code units |
 | `webAuth.runScript` | `webAuth` | `{originUrl, script}`; the script returns through `qplayerWebAuthDone(string)` |
+| `files.save` | `files.save`, plus network grants for the URL | `{url, filename, mimeType, headers}`; download after the user selects a file |
+| `files.downloadCurrent` | `files.save` | `{}`; open the host quality/download flow for the current song |
 
 ### webAuth.runScript
 
-`originUrl` must be an HTTPS URL granted by `networkDomains`. The host runs up to
-256 KiB of plugin JavaScript in an off-screen system WebView, returns up to 64 KiB
-from the first `qplayerWebAuthDone(string)` call, and destroys or times out the
-session. SDK URLs, initialization and result parsing belong to the plugin. WebView
-subresources and requests do not pass through the `http.request` DNS/redirect
-policy, so grant `webAuth` only to trusted plugins that require a browser context.
+`originUrl` (≤2048 characters) must be a granted HTTP(S) URL; HTTP also needs
+`clearTextNetwork`. The script allows 256 Ki characters and returns at most 64 Ki
+characters through `qplayerWebAuthDone(string)`. Sessions close after completion
+or a 45-second timeout. Each platform allows only one active script session.
+Android runs in empty HTML with `originUrl` as the base URL. Desktop navigates to
+the URL before injection, so the initial document is not identical across platforms.
+The plugin owns SDK loading, initialization, and result parsing. Missing WebView,
+desktop headless mode, or an unavailable Android Activity causes failure.
+WebView requests and subresources do not pass through the `http.request` DNS and
+redirect policy. Grant `webAuth` only to trusted plugins that need a browser.
+Web login and script execution have different URL requirements.
 
 ### http.request
 
@@ -373,34 +456,72 @@ qplayer.call("http.request", {
   headers: {"Content-Type": "application/x-www-form-urlencoded"},
   body: "a=1&b=2",
   timeoutMs: 10000,        // 1000–30000
-  includeBase64: false     // true when the raw bytes are needed
+  includeBase64: false,    // true when binary bytes are needed
+  followRedirects: true    // false returns the redirect response itself
 })
 // → {status, finalUrl, body, headers, setCookies, bodyBase64?}
 ```
 
-There is a check on both ends: the URL must match `networkDomains`, the method must
-be declared, a host resolving to a private or loopback address is refused unless
-`localNetwork` is granted, and redirects — 5 at most — are re-checked on every hop.
-A 303, or a 301/302 on POST, downgrades to GET per spec, so `GET` must be declared
-as well. Request and response bodies are capped at 16 MiB each. `Set-Cookie` is also
-returned separately as `setCookies`, because Java's header map folds duplicates.
+The URL must match `networkDomains` and the method must be declared. Restricted
+DNS destinations are rejected; private/loopback access requires `localNetwork`.
+The default follows at most 5 redirects and checks each hop again. A 303, or
+a 301/302 on POST, switches to GET, which must also be declared.
+Use `followRedirects: false` to read the redirect status and Location.
+`setCookies` collects every visited response's Set-Cookie values, including
+redirects. The host does not maintain a cookie session for the plugin.
+DNS checks and transport connection use separate lookups; no request-specific
+DNS pinning is configured. This is not complete DNS-rebinding protection,
+especially when `clearTextNetwork` is also granted.
+
+`body` sends UTF-8 text; `bodyBase64` sends decoded binary bytes unchanged.
+They are mutually exclusive. Alternatively, use
+`multipart: {fields: {key: "value"}, file: {field: "file", filename: "cover.png",
+mimeType: "image/png", bodyBase64: "..."}}`, exclusive with both body fields.
+This is a field description, not a sendable image example. It permits 32 fields
+of 4096 characters each and one nonempty file. The host generates the boundary
+and adds Content-Type unless explicitly supplied. The encoded request body and
+the response body each allow 16 MiB.
+
+Without an explicit Accept-Encoding, the host negotiates gzip and decompresses
+within both compressed and expanded 16 MiB limits. `body` is UTF-8 text and
+`bodyBase64` contains the same decompressed bytes. Automatic decompression removes
+Content-Encoding/Content-Length from returned headers. An explicit Accept-Encoding
+keeps raw bytes; use `compression.gunzip` when needed. Duplicate response headers
+are combined. A historical compatibility path turns a specific successful
+ptlogin `ptqrlogin` redirect into `ptuiCB(...)` text; this is not a general redirect contract.
+
+### Downloads
+
+`files.save` downloads a granted URL to a user-selected file. It does not accept
+an arbitrary local path. The host sanitizes `filename` (input ≤180 characters);
+`mimeType` allows 128 characters and at most the first 64 headers are processed.
+Every redirect checks the grant, with at most 5 redirects, a 1 GiB size cap,
+and 120-second connect/read timeouts.
+`files.downloadCurrent` takes no URL or song ID. It uses the current song at call
+time, which may belong to another provider, and fails if there is no current song.
+It opens the host quality/save flow and returns whether saving succeeded.
+Cancellation returns false; errors may reject the Promise. These services require
+a platform save picker. The handler's 90-second deadline still applies; the lower
+network timeout does not extend how long the handler can wait.
 
 ### crypto
 
 The host exposes a fixed set of primitives covering the signing and decryption
 common sources require, rather than arbitrary algorithms:
 
-- `crypto.digest` — `{algorithm: "SHA-256"|"SHA-1"|"MD5", data, dataEncoding, output}`
-- `crypto.random` — `{length: 1..1024, output}`
-- `crypto.aes` — `{transformation: "AES/CBC/PKCS5Padding"|"AES/ECB/PKCS5Padding"|"AES/GCM/NoPadding", operation: "encrypt"|"decrypt", key, iv, aad, data}`
-- `crypto.hmac` — `{algorithm: "HmacSHA256"|"HmacSHA1", key, data}`
-- `crypto.modPow` — `{baseHex, exponentHex, modulusHex, width}`, for RSA steps
-- `crypto.x25519` — `{scalar, point}`, 32 bytes each
+- `crypto.digest` — `{algorithm: "SHA-256"|"SHA-1"|"MD5", data, dataEncoding, outputEncoding}`
+- `crypto.random` — `{length: 1..1024, outputEncoding}`, length defaults to 16
+- `crypto.aes` — `{transformation: "AES/CBC/PKCS5Padding"|"AES/ECB/PKCS5Padding"|"AES/GCM/NoPadding", operation: "encrypt"|"decrypt", key, iv, aad, data, outputEncoding}`
+- `crypto.hmac` — `{algorithm: "HmacSHA256"|"HmacSHA1", key, data, outputEncoding}`
+- `crypto.modPow` — `{baseHex, exponentHex, modulusHex, width}`, returns hex; width is the minimum hex digit count, not bytes
+- `crypto.x25519` — `{scalar, point, outputEncoding}`, 32 bytes each; omitted point defaults to base point 9
+- `crypto.sha256` — historical shortcut, `{value}`; UTF-8 SHA-256 returned as hex
 
-Encoding rules: data arguments (`data`) default to `utf8`, key material (`key`,
-`iv`, `aad`, `scalar`) defaults to `base64`; either can be overridden with
-`<name>Encoding` set to `utf8`/`base64`/`hex`. Output encoding is `output`,
-default `base64`.
+`data` defaults to `utf8`; `key`, `iv`, `aad`, `scalar`, and `point` default to
+`base64`. Select `utf8`/`base64`/`hex` with `<name>Encoding`. The output field
+is `outputEncoding`, not `output`, and defaults to `base64`. This also applies to
+`compression.gunzip`. AES keys require 16/24/32 bytes; CBC IV requires 16 bytes
+and GCM IV 12 bytes. ECB does not use an IV.
 
 ### Playback state
 
@@ -413,13 +534,28 @@ default `base64`.
   positionMs: 0, durationMs: 0,
   playing: true,
   transitioning: false,     // the host is switching tracks
-  seekRevision: 0,          // changes when the user seeks
-  endRevision: 0            // changes when a track ends naturally
+  seekRevision: 0,          // host seek marker, not only user drags
+  endRevision: 0            // natural-end marker, even while auto-advance is blocked
 }
 ```
 
-This surface is source-neutral; the host does not need to know what feature the
-plugin builds on top of it.
+These revisions are host-wide event counters, not queue versions or song IDs.
+They do not identify the last ended song. Position, playback state, and revisions
+are global even when the current song belongs to another plugin. Only identity
+fields are filtered; do not infer other providers' IDs from them.
+
+| Call | Arguments and behavior |
+|---|---|
+| `playback.play/pause/next` | `{}`; global player controls; `next` uses host auto-advance logic |
+| `playback.seek` | `{positionMs}`, clamped to 0–31 days |
+| `playback.select` | `{songId, positionMs, playing}`; target must already be in the queue; playing defaults to true |
+| `playback.blockAutoAdvance` | `{blocked}`; block natural-end auto-advance; releasing this plugin's block can execute a pending advance |
+| `queue.replace` | `{songs, currentSongId, positionMs, playing}`; ≤500 Song DTOs, all owned by this plugin; target must exist in the replacement |
+
+`songId`/`currentSongId` may be native IDs or canonical song IDs for this plugin,
+never cross-provider targets. Replacement clears the old queue and playlist
+context; `playing` defaults to true. `playbackControl` controls the global player,
+not only this source, while selection/replacement enforce the ownership rules above.
 
 ---
 
@@ -433,6 +569,9 @@ any styling code, at the cost of being limited to the nodes listed below.
 ```json
 {"id": "preferences", "placement": "settings", "label": "Preferences", "icon": "tune"}
 ```
+
+A nonempty `ui` manifest requires `customUi` and a `handlers["ui.<id>"]` function
+for every entry. Entry labels allow 40 characters; icons match `[a-z][a-z0-9_]{0,63}`.
 
 `placement: "settings"` appears on that plugin's settings page;
 `placement: "playerAction"` appears in the phone top bar and the tablet/desktop
@@ -482,18 +621,20 @@ A `switch` is both input and action: flipping it submits its own id, and its new
 state arrives as a boolean in `payload.inputs[id]`. Use it for on/off state; the
 host renders it identically to its own settings rows.
 
-The schema has no colors, images, rich text or free-form geometry: a plugin
-describes a dialog rather than painting one, so it cannot imitate host chrome it was
-not given. Anything off-schema fails the entire description instead of being
-dropped, which leaves no way to probe rendering behaviour with malformed shapes.
+The schema has no colors, images, rich text, or free-form geometry. The host
+rebuilds descriptions from an allowlist and drops unknown extra fields. Unknown
+node types, invalid field types, and out-of-range values fail the description.
+Do not rely on extra fields to change rendering.
 
 ### Background tick
 
-A plugin declaring `backgroundTimers` may export `backgroundTick`. The host calls it
-about once a second on the plugin actor, never overlaps two ticks for the same
-plugin, and stops immediately when the plugin is disabled or removed. Room
-protocols, sync policy and polling belong here and reach the host through the
-generic playback calls above.
+Declare `backgroundTimers` and define `backgroundTick` in `module.exports.handlers`,
+not in `capabilities`. The host schedules it about once a second with an empty
+argument object and ignores its return value. If the previous tick is unfinished,
+the next tick is skipped; timing is not exact. Closing UI does not stop ticks.
+Disable, removal, and host shutdown stop future scheduling; this does not promise
+an always-running system service. The plugin owns room protocols, synchronization,
+and polling. `backgroundTimers` is not a general JavaScript timer API.
 
 ---
 
@@ -510,24 +651,27 @@ Every file except the hash manifest itself and the signature must appear in that
 hash list. Installed files are re-hashed before every activation, so files added or
 modified afterwards are not executed.
 
-Unsigned packages can be imported manually for development, and QPlayer always shows
-a mandatory code-execution warning for them. Public distribution requires signing
-with the publisher key:
+Manual import accepts unsigned packages, not only for development. It requires a
+code-execution warning even if a package contains a signature; that alone does not
+establish publisher trust. Catalog installation/updates require the pinned key:
 
 ```bash
 QPLAYER_PLUGIN_SIGNING_KEY=/secure/path/publisher-private.pem ./scripts/package.sh
 ```
 
-QPlayer carries a built-in list of source repositories, each pinned to a GitHub
-`owner/repo` and a publisher public key. The offered version comes from that
-repository's latest release, so a release must be tagged
-`v<version from plugin.json>`, attach exactly one `.qplug`, and not be a draft or
-pre-release. When these conditions are met, a plugin ships updates on its own
-schedule without a QPlayer release.
+The bundled catalog is
+`player-core/src/main/resources/dev/t1m3/qplayer/plugin/plugin-catalog.json`.
+Entries include plugin ID, GitHub `repo`, and `publisherKey`. The host reads
+`releases/latest` and selects the first `.qplug` asset; attach only one to avoid
+ambiguity. The template workflow requires `v<plugin.json.version>` as the tag,
+but installation uses the signed manifest's ID and version. Catalog changes need
+a host release. Plugin versions can ship independently if ID, key, and compatibility stay valid.
 
-A pinned publisher key cannot be rotated: the public key is compiled into the
-QPlayer binary, and changing it prevents every already-released QPlayer from
-installing the plugin until QPlayer itself ships a new version.
+Released binaries retain their pinned key. Packages signed by a replacement key
+fail catalog installation/updates on those hosts. Editing a repository key file
+cannot update released hosts; coordinate key changes with catalog and host updates.
+A signature in a package does not imply current-host trust. For package file
+selection and the template workflow, see the [README](../README.en.md#signing-and-releasing).
 
 ---
 
@@ -537,18 +681,18 @@ installing the plugin until QPlayer itself ships a new version.
 |---|---|
 | One handler call | 90 s |
 | One JS module | 4 MiB |
-| Returned value | depth 32 / 500k nodes / 24 MiB of strings |
+| Returned value | depth 32 / 500k nodes / 24 Mi UTF-16 code units across strings |
 | `http.request` body, response | 16 MiB each |
 | HTTP timeout | 1–30 s, default 10 |
 | Redirects | 5 |
-| `storage` value | 1 MiB |
+| `storage` record | 1 MiB including serialized key/value JSON |
 | Native id | 2048 bytes |
 | Title/name text | 4096 chars |
-| Description text | 1 MiB |
+| Description text | 1048576 UTF-16 code units |
 | Pagination cursor | 8192 chars |
 | Search results | 200 per page |
 | Playlist tracks | 20000 |
-| Lyrics | 12 assets, 4 MiB each |
+| Lyrics | 12 assets, 4 Mi UTF-16 code units each |
 | Dialog | 10 nodes |
 | UI entries | 8 |
 
@@ -566,11 +710,12 @@ installing the plugin until QPlayer itself ships a new version.
 - Artist or album entries without a name are dropped rather than failing the
   response. Real catalogs contain them (cloud uploads, delisted artists), and
   dropping a single entry keeps the rest of the playlist usable.
-- `limit` is both a hint and a cap. The host passes the user's setting and truncates
-  again while parsing, so extra items are not used.
+- `limit` handling differs by interface. Obey the requested size and each
+  structure's hard cap. Most bounded arrays fail when oversized; do not rely on truncation.
 - Avoid CPU-bound loops in a handler. The 90-second timeout covers the whole call,
   including time spent waiting on the network.
 
-For debugging: store raw responses with `storage.put` and inspect them later (note
-the 1 MiB cap), or call `notifications.toast` on branches under investigation.
-Plugin `console` output does not reach the host log.
+For debugging, call `notifications.toast` with non-secret information (requires
+`notifications`). `storage.put` has no developer inspection UI and is not a log
+interface. Do not store cookies or tokens there. Time, network, and returned-value
+limits still apply to debugging code.

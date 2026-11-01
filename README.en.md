@@ -2,9 +2,8 @@
 
 <p><a href="README.md">简体中文</a> · <b>English</b></p>
 
-A working skeleton for a QPlayer music source plugin. Clone it, change the manifest
-fields, implement your handlers, and you have a `.qplug` package that installs into
-QPlayer.
+A minimal QPlayer music source plugin example. Clone it, change the manifest fields,
+and implement your handlers to produce an installable `.qplug` package.
 
 QPlayer itself contains no online music source and distributes no source code for
 one. Search, playlists, stream URLs, lyrics and login all come from a plugin the
@@ -13,6 +12,10 @@ in the manifest and confirmed by the user at install time take effect. The templ
 manifest is therefore minimal; extend it as needed.
 
 ## Build and import
+
+Use Bash, Python 3, and a JDK that supplies `jar` (JDK 21 is recommended, matching
+the host development environment). Signing also requires OpenSSL. On Windows, use
+a Bash environment that supplies these commands.
 
 ```bash
 chmod +x scripts/package.sh
@@ -27,6 +30,11 @@ The default example declares only `searchSongs` and returns a valid empty page, 
 it requires no permissions and can be installed and enabled as is. This verifies the
 packaging, import and activation path before any real logic is written.
 
+The reference follows QPlayer **1.9.6**; `apiVersion` remains **1.0**. The empty
+search example keeps `minHostVersion: "1.4.0"`. This does not make every interface
+in the reference available on 1.4.0. Set the minimum host version to the oldest
+version you actually verified for the features you use, not from `apiVersion` alone.
+
 ## Next steps
 
 1. In `plugin.json`, set `id`, `name`, `version` and `capabilities`. The `id` becomes
@@ -34,16 +42,34 @@ packaging, import and activation path before any real logic is written.
 2. In `src/main.js`, implement a same-named handler for every declared capability.
    Declaring one without implementing it causes the plugin to refuse activation, so
    the UI never shows an entry that does nothing.
-3. For network access, add the `network` permission and list exact hosts in
-   `networkDomains`:
+3. For network access, add `network` and list exact hosts in `networkDomains`.
+   This complete `searchSongs` handler does not supply a real source. It assumes
+   your API returns `{songs: [{id, title, durationMs}], nextCursor: ""}` and
+   paginates according to the requested `limit`:
 
 ```js
-qplayer.call("http.request", {
-  url: "https://api.example.com/search?q=" + encodeURIComponent(args.query),
-  method: "GET"
-}).then(function (response) {
-  return {items: JSON.parse(response.body).songs.map(toSongDto), nextCursor: ""};
-});
+module.exports = {
+  handlers: {
+    searchSongs: function (args) {
+      return qplayer.call("http.request", {
+        url: "https://api.example.com/search?q=" + encodeURIComponent(args.query)
+          + "&cursor=" + encodeURIComponent(args.cursor || "")
+          + "&limit=" + args.limit,
+        method: "GET"
+      }).then(function (response) {
+        if (response.status !== 200) throw new Error("Search HTTP " + response.status);
+        var data = JSON.parse(response.body);
+        return {
+          items: data.songs.map(function (song) {
+            return {id: String(song.id), title: String(song.title),
+              durationMs: Number(song.durationMs || 0)};
+          }),
+          nextCursor: data.nextCursor ? String(data.nextCursor) : ""
+        };
+      });
+    }
+  }
+};
 ```
 
 `networkDomains` governs both requests and the URLs a plugin returns: covers, stream
@@ -55,17 +81,23 @@ limits are documented in the [plugin ABI 1.0](docs/ABI.en.md).
 
 ## Signing and releasing
 
-Unsigned packages can only be imported manually, and QPlayer shows a code-execution
-warning every time. Public distribution requires a P-256 publisher key that stays
-out of the repository:
+Manual import accepts unsigned packages after a code-execution warning; this is not
+limited to development. A signature inside a manually imported package does not
+establish publisher trust by itself. Installation and updates from the built-in
+catalog require the P-256 key pinned to that entry. The template's tag release
+workflow also requires signing:
 
 ```bash
 QPLAYER_PLUGIN_SIGNING_KEY=/secure/path/publisher-private.pem ./scripts/package.sh
 ```
 
-`scripts/package.sh` records every file under `plugin.json`, `src/` and an optional
-`assets/` in `META-INF/qplayer-files.json`, adds `META-INF/qplayer.sig` when a key is
-supplied, and writes `dist/<id>-<version>.qplug`.
+`scripts/package.sh` copies only `plugin.json`, `src/`, and optional `ui/` and
+`assets/` directories. It records their hashes in `META-INF/qplayer-files.json`,
+adds `META-INF/qplayer.sig` when a key is supplied, and writes
+`dist/<id>-<version>.qplug`. Other directories are not packaged automatically.
+`ui/` is only a resource directory; the host does not execute plugin QML.
+`verify-package.py` checks paths, hash coverage, and the entry file. It does not
+check signatures, manifest permissions, or handler behavior; the host must check those.
 
 Generate the publisher key once, before the first release:
 
@@ -81,10 +113,11 @@ rather than leaving it in the working tree. `publisher-key.pub` is the public ha
 and should be committed: QPlayer pins one copy, and the release workflow uses the
 other to verify the signing key has not been replaced.
 
-> A publisher key cannot be rotated. The public key is compiled into the QPlayer
-> binary, so changing it prevents every already-released QPlayer from installing the
-> plugin until QPlayer itself ships a new version. The workflow's "Match the pinned
-> publisher key" step blocks this before signing.
+> Released hosts retain the public key compiled into them. Packages signed with a
+> different key fail catalog installation and updates on those hosts. Changing a
+> public-key file in the repository cannot change released binaries. Key changes
+> require a catalog update and a host release, with a plan for older hosts.
+> "Match the pinned publisher key" checks the private key when the public-key file exists.
 
 Pushing a tag triggers a release: the workflow signs, verifies and creates the GitHub
 Release, while branches and pull requests only build unsigned development packages.
@@ -94,11 +127,12 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-QPlayer reads the repository's latest release, so three conditions must hold: the tag
-equals `v<version from plugin.json>`, the release carries exactly one `.qplug`, and
-it is a normal release rather than a draft or pre-release (GitHub's
-`releases/latest` skips both). Once they hold, new plugin versions require no change
-in QPlayer.
+QPlayer reads `releases/latest` for the repository in the pinned catalog entry;
+that endpoint excludes drafts and pre-releases. The template workflow requires
+`v<version from plugin.json>` as the tag. Attach one `.qplug` per release to avoid
+ambiguity: the current host selects the first matching asset. The signed manifest's
+plugin ID and version are authoritative, not the tag. Plugin updates normally do
+not require a host release if the pinned ID, key, and compatibility requirements stay valid.
 
 ## Conventions
 
@@ -109,11 +143,12 @@ in QPlayer.
   the user at install time.
 - Terms of service, content licensing and local law are the responsibility of the
   plugin author and the user.
-- To be listed as a built-in source: maintain your own repository, publish signed
-  packages as above, and submit an entry to QPlayer containing your `owner/repo` and
-  the contents of `publisher-key.pub` (`PluginCatalogService.SOURCES`). Listed
-  plugins still release on their own schedule; QPlayer bundles and hosts no plugin
-  code or packages.
+- To enter the built-in catalog, maintain your repository, publish signed packages,
+  and submit an entry to QPlayer's
+  `player-core/src/main/resources/dev/t1m3/qplayer/plugin/plugin-catalog.json`.
+  Include `id`, `name`, `description`, `repo` (`owner/repo`), and `publisherKey`
+  (the contents of `publisher-key.pub`). Listed plugins release independently;
+  QPlayer bundles and hosts no plugin code or packages.
 
 This template is MIT licensed. Repositories generated from it may choose their own
 license.
